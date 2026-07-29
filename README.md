@@ -62,15 +62,17 @@ python -m wafpass_mcp.main
 
 The SSE endpoint is available at `http://localhost:3001/sse`.
 
-### Docker Compose (with the rest of the WAF++ stack)
+### Docker Compose (local development)
 
-From the repository root:
+For local development the bridge can also be built from its `Dockerfile` and started alongside the rest of the WAF++ stack. From the repository root:
 
 ```bash
 docker compose up -d wafpass-mcp
 ```
 
 The service builds from `./wafpass-mcp`, depends on `wafpass-server`, and exposes port `3001`. Override `WAFPASS_TOKEN_MODE` or `WAFPASS_JWT_SECRET` via `.env` if you are not using the default introspection mode.
+
+> **Release artifact:** `wafpass-mcp` is released as a Python package on PyPI. The `Dockerfile` exists only for local convenience in `docker-compose.yml`; the release workflow does not publish a Docker image.
 
 ## Configuration
 
