@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('paths:', len\\(d.get\\('paths',{}\\)\\)\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"admin\"}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:3001/messages/ -d '{}')",
+      "Bash(curl -s -X POST \"http://localhost:3001/messages/?session_id=abc\" -d '{}')",
+      "Bash(curl -s -X POST http://localhost:8000/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"changeme123\"}')",
+      "Bash(ruff check *)",
+      "Bash(mypy wafpass_mcp tests)",
+      "Bash(pytest tests *)",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(.venv/bin/mypy wafpass_mcp tests)",
+      "Bash(.venv/bin/pytest tests *)",
+      "Bash(.venv/bin/mypy wafpass_mcp tests scripts)",
+      "Bash(.venv/bin/ruff format *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(docker build *)",
+      "Bash(docker compose *)"
+    ]
+  }
+}
