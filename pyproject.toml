@@ -6,7 +6,33 @@ build-backend = "hatchling.build"
 name = "wafpass-mcp"
 version = "0.1.0"
 description = "Model Context Protocol bridge for WAF++ (WAFpass) with OIDC pass-through auth."
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Artem Lajko" },
+    { name = "Sascha Lewandowski" },
+    { name = "Sebastian Meyer" },
+    { name = "Tim Urlaub" },
+]
+keywords = [
+    "waf++", "mcp", "model-context-protocol", "fastapi", "sse",
+    "compliance", "security", "cloud", "devsecops", "governance",
+    "wafpass", "ai-assistant",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: Security",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -28,12 +54,18 @@ dev = [
     "mypy>=1.11",
 ]
 
+[project.urls]
+Homepage = "https://waf2p.dev"
+Documentation = "https://waf2p.dev/docs/"
+Repository = "https://github.com/WAF2p/wafpass-mcp"
+"Bug Tracker" = "https://github.com/WAF2p/wafpass-mcp/issues"
+Community = "https://github.com/WAF2p"
+
 [project.scripts]
 wafpass-mcp = "wafpass_mcp.main:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["wafpass_mcp*"]
+[tool.hatch.build.targets.wheel]
+packages = ["wafpass_mcp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]

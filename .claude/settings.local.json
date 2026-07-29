@@ -21,7 +21,9 @@
       "Bash(.venv/bin/python *)",
       "Bash(.venv/bin/pip install *)",
       "Bash(docker build *)",
-      "Bash(docker compose *)"
+      "Bash(docker compose *)",
+      "Bash(.venv/bin/pip show *)",
+      "Bash(unzip -p dist/wafpass_mcp-0.1.0-py3-none-any.whl '*/METADATA')"
     ]
   }
 }
