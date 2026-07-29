@@ -201,13 +201,15 @@ Settings are loaded once at startup via `pydantic-settings`.
 
 ## Docker and compose
 
-The project builds a standalone image from `Dockerfile` and is also referenced from the monorepo root `docker-compose.yml`.
+A `Dockerfile` is included so the bridge can be built locally from the monorepo root `docker-compose.yml`:
 
 ```
 docker compose up -d wafpass-mcp
 ```
 
 The compose service sets `WAFPASS_API_BASE_URL=http://wafpass-server:8000` and `WAFPASS_TOKEN_MODE=introspection` by default.
+
+> **Release artifact:** The project is released as a Python package on PyPI. The `Dockerfile` is only for local development convenience; the release workflow does not build or publish a container image.
 
 ---
 
