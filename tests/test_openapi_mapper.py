@@ -93,6 +93,23 @@ def test_required_role_for_runs(sample_spec: dict[str, object]) -> None:
     assert mapper.operations["create_run"].required_role == "engineer"
 
 
+def test_tool_description_includes_category_and_role(
+    sample_spec: dict[str, object],
+) -> None:
+    """Tool descriptions should repeat category and role for clients that don't render meta."""
+    mapper = OpenAPIMapper(sample_spec)
+    create_tool = mapper.operations["create_run"].tool
+    assert "Ingest a run result" in create_tool.description
+    assert "Category: runs" in create_tool.description
+    assert "Minimum role required: engineer" in create_tool.description
+    assert create_tool.meta is not None
+    assert create_tool.meta.get("category") == "runs"
+    assert create_tool.meta.get("required_role") == "engineer"
+
+    list_tool = mapper.operations["list_runs"].tool
+    assert "Minimum role required: clevel" in list_tool.description
+
+
 def test_request_model_enforces_required_body_field(
     sample_spec: dict[str, object],
 ) -> None:
@@ -245,10 +262,11 @@ def test_tools_are_grouped_by_openapi_tag(
     assert create_tool.title == "Ingest a run result"
     assert create_tool.meta is not None
     assert create_tool.meta.get("category") == "runs"
-    # Operations without tags stay uncategorized.
+    # Operations without tags still carry role info.
     list_tool = mapper.operations["list_runs"].tool
     assert list_tool.title == "List compliance runs"
-    assert list_tool.meta is None
+    assert list_tool.meta.get("category") is None
+    assert list_tool.meta.get("required_role") == "clevel"
 
 
 def test_operation_hints_reflect_http_method(

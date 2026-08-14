@@ -417,6 +417,7 @@ class OpenAPIMapper:
                     details.get("description", "") or summary
                 ).strip()
                 category = _category_from_tags(details.get("tags"))
+                required_role = ROLE_MAP.get((method, canonical_path))
                 parameters = details.get("parameters", []) or []
                 request_body = details.get("requestBody")
 
@@ -433,16 +434,31 @@ class OpenAPIMapper:
                     request_body,
                     spec=self.spec,
                 )
-                required_role = ROLE_MAP.get((method, canonical_path))
 
-                meta = {"category": category} if category else None
+                meta: dict[str, Any] = {}
+                if category:
+                    meta["category"] = category
+                if required_role:
+                    meta["required_role"] = required_role
+
+                # Surface category and role inside the description as well because not
+                # all MCP clients render tool meta/annotations.
+                description_parts = [description]
+                if category:
+                    description_parts.append(f"Category: {category}.")
+                if required_role:
+                    description_parts.append(
+                        f"Minimum role required: {required_role}."
+                    )
+                description = "\n\n".join(description_parts)
+
                 tool = Tool(
                     name=tool_name,
                     title=title,
                     description=description,
                     input_schema=request_model.model_json_schema(),
                     annotations=_operation_hints(method),
-                    meta=meta,
+                    meta=meta or None,
                 )
 
                 self.operations[tool_name] = OperationMeta(

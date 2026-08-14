@@ -24,6 +24,7 @@ from mcp.types import (
 
 from wafpass_mcp.auth import UserContext
 from wafpass_mcp.config import settings
+from wafpass_mcp.explain import explain_response
 from wafpass_mcp.openapi_mapper import OpenAPIMapper, OperationMeta
 from wafpass_mcp.token_manager import TokenManager
 
@@ -130,11 +131,12 @@ class MCPServerBridge:
         validated = op.request_model(**arguments).model_dump(exclude_unset=True)
 
         result = await self._invoke_backend(op, validated, user_ctx)
+        explained = explain_response(op.tool.name, result)
         return CallToolResult(
             content=[
                 TextContent(
                     type="text",
-                    text=json.dumps(result, default=str, indent=2),
+                    text=json.dumps(explained, default=str, indent=2),
                 )
             ]
         )
