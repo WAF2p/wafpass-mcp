@@ -1,4 +1,5 @@
 """Tests for access-token refresh in long-lived stdio sessions."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -85,9 +86,7 @@ async def test_token_refreshed_near_expiry(
     refresh.assert_awaited_once_with("old-refresh")
 
 
-async def test_refresh_token_rotated(
-    near_expiry_token: str, monkeypatch: Any
-) -> None:
+async def test_refresh_token_rotated(near_expiry_token: str, monkeypatch: Any) -> None:
     refresh = AsyncMock(return_value=("new-access", "new-refresh"))
     monkeypatch.setattr(
         "wafpass_mcp.token_manager.refresh_access_token",
@@ -123,9 +122,7 @@ async def test_no_refresh_without_refresh_token(
     refresh.assert_not_awaited()
 
 
-async def test_refresh_failure_raises(
-    near_expiry_token: str, monkeypatch: Any
-) -> None:
+async def test_refresh_failure_raises(near_expiry_token: str, monkeypatch: Any) -> None:
     refresh = AsyncMock(side_effect=Exception("upstream rejected"))
     monkeypatch.setattr(
         "wafpass_mcp.token_manager.refresh_access_token",

@@ -4,6 +4,7 @@ The server is created once, tools are registered at startup from the WAFpass
 OpenAPI spec, and the authenticated user context is passed through the ASGI
 scope so it is available in every tool handler.
 """
+
 from __future__ import annotations
 
 import json
@@ -131,7 +132,7 @@ class MCPServerBridge:
         validated = op.request_model(**arguments).model_dump(exclude_unset=True)
 
         result = await self._invoke_backend(op, validated, user_ctx)
-        explained = explain_response(op.tool.name, result)
+        explained = self.explain_response(op.tool.name, result)
         return CallToolResult(
             content=[
                 TextContent(
@@ -140,6 +141,12 @@ class MCPServerBridge:
                 )
             ]
         )
+
+    def explain_response(
+        self, tool_name: str, response: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Public hook for response translation."""
+        return explain_response(tool_name, response)
 
     def _current_user(self, ctx: Any) -> UserContext | None:
         """Extract the validated user context.

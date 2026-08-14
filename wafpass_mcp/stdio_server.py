@@ -7,6 +7,7 @@ over stdin/stdout. The WAF++ access token is supplied via the
 Because stdout is reserved for the MCP protocol, all logging is directed to
 stderr.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,22 +65,24 @@ async def main() -> None:
     logger.info("validating_token")
     try:
         ctx: UserContext = await validate_token(token)
-    except Exception:
+    except Exception as exc:
         if not refresh_token:
             logger.exception("token_validation_failed_no_refresh_token")
             raise SystemExit(
-                "Access token is invalid or expired and no WAFPASS_REFRESH_TOKEN is set. "
-                "Please log in again through the WAFpass server and update Claude Desktop's environment."
-            )
+                "Access token is invalid or expired and no "
+                "WAFPASS_REFRESH_TOKEN is set. Please log in again through "
+                "the WAFpass server and update Claude Desktop's environment."
+            ) from exc
         logger.info("access_token_rejected_attempting_refresh")
         try:
             token, _ = await refresh_access_token(refresh_token)
-        except Exception:
+        except Exception as exc:
             logger.exception("refresh_token_failed")
             raise SystemExit(
                 "Access token and refresh token are both invalid or expired. "
-                "Please log in again through the WAFpass server and update Claude Desktop's environment."
-            )
+                "Please log in again through the WAFpass server and update "
+                "Claude Desktop's environment."
+            ) from exc
         ctx = await validate_token(token)
 
     if not ctx.is_active:
@@ -98,9 +101,7 @@ async def main() -> None:
             threshold_seconds=settings.wafpass_refresh_threshold_seconds,
         )
     else:
-        logger.warning(
-            "token_refresh_disabled", reason="WAFPASS_REFRESH_TOKEN not set"
-        )
+        logger.warning("token_refresh_disabled", reason="WAFPASS_REFRESH_TOKEN not set")
 
     bridge = MCPServerBridge(sse=False, token_manager=token_manager)
     await bridge.load_openapi()

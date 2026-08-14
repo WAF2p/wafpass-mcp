@@ -13,6 +13,7 @@ This keeps the bridge IdP-agnostic: Keycloak / Entra / Okta / etc. are handled
 entirely by the upstream WAFpass OIDC/SAML flows. The bridge only trusts tokens
 issued by WAFpass.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -86,9 +87,7 @@ def _decode_local_token(token: str) -> dict[str, Any]:
             detail="WAFPASS_JWT_SECRET not configured for local JWT mode.",
         )
     try:
-        payload = jwt.decode(
-            token, settings.wafpass_jwt_secret, algorithms=["HS256"]
-        )
+        payload = jwt.decode(token, settings.wafpass_jwt_secret, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}"
@@ -145,7 +144,10 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     if not new_access or not new_refresh:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Upstream /api/v1/auth/refresh returned an incomplete token response.",
+            detail=(
+                "Upstream /api/v1/auth/refresh returned an incomplete "
+                "token response."
+            ),
         )
     return new_access, new_refresh
 

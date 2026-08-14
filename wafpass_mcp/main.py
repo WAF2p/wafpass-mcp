@@ -14,6 +14,7 @@ OIDC pass-through flow
 6. ``call_tool`` proxies the call to WAFpass, forwarding the same Bearer token,
    so the backend performs row-level / endpoint-level authorization.
 """
+
 from __future__ import annotations
 
 import logging
@@ -146,9 +147,7 @@ async def messages_endpoint(request: Request) -> Response:
 
     bridge = _get_bridge()
     assert bridge.sse is not None
-    await bridge.sse.handle_post_message(
-        request.scope, request.receive, request._send
-    )
+    await bridge.sse.handle_post_message(request.scope, request.receive, request._send)
     return Response()
 
 

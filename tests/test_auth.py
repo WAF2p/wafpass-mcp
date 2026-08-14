@@ -1,4 +1,5 @@
 """Tests for authentication helpers."""
+
 from __future__ import annotations
 
 import uuid

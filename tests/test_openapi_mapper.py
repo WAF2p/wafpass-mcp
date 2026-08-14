@@ -1,5 +1,8 @@
 """Tests for the OpenAPI-to-MCP tool mapper."""
+
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -69,7 +72,10 @@ def sample_spec() -> dict[str, object]:
                 "get": {"operationId": "get_user_logs", "summary": "Get user logs"}
             },
             "/api/v1/sso/config": {
-                "get": {"operationId": "list_sso_configs", "summary": "List SSO configs"}
+                "get": {
+                    "operationId": "list_sso_configs",
+                    "summary": "List SSO configs",
+                }
             },
         },
     }
@@ -96,9 +102,10 @@ def test_required_role_for_runs(sample_spec: dict[str, object]) -> None:
 def test_tool_description_includes_category_and_role(
     sample_spec: dict[str, object],
 ) -> None:
-    """Tool descriptions should repeat category and role for clients that don't render meta."""
+    """Descriptions repeat category and role for clients that don't render meta."""
     mapper = OpenAPIMapper(sample_spec)
     create_tool = mapper.operations["create_run"].tool
+    assert create_tool.description is not None
     assert "Ingest a run result" in create_tool.description
     assert "Category: runs" in create_tool.description
     assert "Minimum role required: engineer" in create_tool.description
@@ -107,6 +114,7 @@ def test_tool_description_includes_category_and_role(
     assert create_tool.meta.get("required_role") == "engineer"
 
     list_tool = mapper.operations["list_runs"].tool
+    assert list_tool.description is not None
     assert "Minimum role required: clevel" in list_tool.description
 
 
@@ -127,7 +135,7 @@ def test_request_model_handles_nullable_anyof(
     sample_spec: dict[str, object],
 ) -> None:
     """OpenAPI ``anyOf`` with a null branch must map to an optional Pydantic field."""
-    spec = dict(sample_spec)
+    spec: dict[str, Any] = dict(sample_spec)
     spec["paths"]["/api/v1/auto-fix/classify"] = {
         "post": {
             "operationId": "classify_findings",
@@ -182,7 +190,7 @@ def test_request_model_handles_nullable_anyof(
 
 def test_request_model_resolves_body_refs(sample_spec: dict[str, object]) -> None:
     """Request bodies that use ``$ref`` must expose the referenced schema fields."""
-    spec = dict(sample_spec)
+    spec: dict[str, Any] = dict(sample_spec)
     spec["components"] = {
         "schemas": {
             "ClassifyRequest": {
@@ -204,7 +212,9 @@ def test_request_model_resolves_body_refs(sample_spec: dict[str, object]) -> Non
             "summary": "Classify findings",
             "requestBody": {
                 "content": {
-                    "application/json": {"schema": {"$ref": "#/components/schemas/ClassifyRequest"}}
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/ClassifyRequest"}
+                    }
                 }
             },
         }
@@ -265,6 +275,7 @@ def test_tools_are_grouped_by_openapi_tag(
     # Operations without tags still carry role info.
     list_tool = mapper.operations["list_runs"].tool
     assert list_tool.title == "List compliance runs"
+    assert list_tool.meta is not None
     assert list_tool.meta.get("category") is None
     assert list_tool.meta.get("required_role") == "clevel"
 
@@ -274,7 +285,11 @@ def test_operation_hints_reflect_http_method(
 ) -> None:
     """Read-only vs destructive hints let Claude Desktop group by operation type."""
     mapper = OpenAPIMapper(sample_spec)
-    assert mapper.operations["list_runs"].tool.annotations.read_only_hint is True
-    assert mapper.operations["list_runs"].tool.annotations.destructive_hint is False
-    assert mapper.operations["create_run"].tool.annotations.read_only_hint is False
-    assert mapper.operations["create_run"].tool.annotations.destructive_hint is True
+    list_annotations = mapper.operations["list_runs"].tool.annotations
+    assert list_annotations is not None
+    assert list_annotations.read_only_hint is True
+    assert list_annotations.destructive_hint is False
+    create_annotations = mapper.operations["create_run"].tool.annotations
+    assert create_annotations is not None
+    assert create_annotations.read_only_hint is False
+    assert create_annotations.destructive_hint is True

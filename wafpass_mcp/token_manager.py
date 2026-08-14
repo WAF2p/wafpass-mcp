@@ -8,6 +8,7 @@ The refresh token is rotated by the upstream WAFpass server: a successful
 ``POST /auth/refresh`` returns both a new access token and a new refresh token.
 Both are stored only in memory.
 """
+
 from __future__ import annotations
 
 import asyncio
