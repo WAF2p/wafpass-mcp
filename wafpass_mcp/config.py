@@ -1,4 +1,5 @@
 """Application configuration."""
+
 from __future__ import annotations
 
 from pydantic import field_validator
@@ -11,6 +12,8 @@ class Settings(BaseSettings):
     wafpass_api_base_url: str = "http://localhost:8000"
     wafpass_token_mode: str = "introspection"  # "introspection" | "jwt_secret"
     wafpass_jwt_secret: str = ""
+    wafpass_refresh_token: str = ""
+    wafpass_refresh_threshold_seconds: int = 300
 
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 3001

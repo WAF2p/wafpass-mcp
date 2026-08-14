@@ -22,9 +22,15 @@ wafpass-mcp/
 │   ├── config.py            # pydantic-settings (env var parsing)
 │   ├── auth.py              # UserContext, token introspection / JWT validation
 │   ├── openapi_mapper.py    # OpenAPI → OperationMeta + Pydantic request models
-│   └── mcp_server.py        # MCPServerBridge: SDK Server, on_list_tools, on_call_tool
+│   ├── mcp_server.py        # MCPServerBridge: SDK Server, on_list_tools, on_call_tool
+│   ├── explain.py           # Backend error + skipped finding explanation layer
+│   ├── settings_store.py    # Per-user config file persistence
+│   ├── configure.py         # Interactive `wafpass-mcp-configure` helper
+│   ├── stdio_server.py      # stdio MCP server entry point
+│   └── token_manager.py     # Access token refresh scheduling
 ├── tests/                   # pytest suite
 ├── scripts/                 # Standalone SSE test clients
+├── docs/                    # User-facing documentation
 ├── .github/workflows/       # CI and release automation
 ├── Dockerfile
 ├── .dockerignore
@@ -182,20 +188,36 @@ The `lifespan` context manager:
 
 ---
 
-## Configuration (`config.py`)
+## Configuration (`config.py` + `settings_store.py`)
 
-Settings are loaded once at startup via `pydantic-settings`.
+Runtime settings are loaded once at startup via `pydantic-settings` from environment variables. In stdio mode, `wafpass-mcp-stdio` first loads a stored user config written by `wafpass-mcp-configure`; environment variables then override those stored values. This lets desktop users run the bridge without editing JSON or copying tokens.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WAFPASS_API_BASE_URL` | `http://localhost:8000` | Upstream WAFpass API |
 | `WAFPASS_TOKEN_MODE` | `introspection` | `introspection` or `jwt_secret` |
 | `WAFPASS_JWT_SECRET` | *(empty)* | Required for `jwt_secret` mode |
+| `WAFPASS_ACCESS_TOKEN` | *(empty)* | WAF++ access token (stdio mode) |
+| `WAFPASS_REFRESH_TOKEN` | *(empty)* | Opaque refresh token (stdio mode) |
+| `WAFPASS_REFRESH_THRESHOLD_SECONDS` | `300` | Refresh window before token expiry |
 | `MCP_HOST` | `0.0.0.0` | Bind host |
 | `MCP_PORT` | `3001` | Bind port |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 `WAFPASS_TOKEN_MODE` is validated to be one of the two allowed strings.
+
+The stored config is written to `platformdirs.user_config_dir("wafpass-mcp")` and created with `0o600` permissions where supported.
+
+## stdio server (`stdio_server.py`)
+
+`wafpass-mcp-stdio` is the recommended entry point for Claude Desktop and other local MCP hosts. It resolves credentials in this order:
+
+1. `WAFPASS_ACCESS_TOKEN` / `WAFPASS_REFRESH_TOKEN` environment variables.
+2. The stored user config file, if present.
+
+If an access token is found but rejected at startup, the stdio server attempts to refresh it using the refresh token. After successful startup, `TokenManager` schedules refreshes before the token expires.
+
+Logging is directed to stderr so stdout remains reserved for MCP protocol messages.
 
 ---
 

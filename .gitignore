@@ -8,3 +8,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.claude
+.claude/settings.local.json
+
+# Local agent guide — not tracked in git
+AGENT.md
+
+# Local TLS certificates generated for HTTPS testing
+*.pem
+*.key
+*.crt

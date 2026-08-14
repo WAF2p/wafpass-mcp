@@ -6,15 +6,18 @@ Binary/streaming endpoints and auth callbacks are skipped. Every exposed
 operation gets a strict Pydantic input validator derived from its OpenAPI
 schema.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from typing import Any, cast
 
-from mcp.types import Tool
+from mcp.types import Tool, ToolAnnotations
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
+
+_API_VERSION_PREFIX_RE = re.compile(r"^/api/v\d+")
 
 _OPENAPI_TYPES_TO_PYTHON: dict[str, type] = {
     "string": str,
@@ -60,8 +63,10 @@ ROLE_MAP: dict[tuple[str, str], str] = {
     ("GET", "/achievements"): "clevel",
 }
 
-# Operations we never expose through the MCP bridge (auth flows, callbacks).
+# Operations we never expose through the MCP bridge (auth flows, callbacks,
+# and admin-only endpoints).
 SKIP_OPERATIONS: set[tuple[str, str]] = {
+    # Auth flows and callbacks.
     ("GET", "/auth/oidc/authorize"),
     ("GET", "/auth/oidc/callback"),
     ("GET", "/auth/saml/login"),
@@ -70,6 +75,43 @@ SKIP_OPERATIONS: set[tuple[str, str]] = {
     ("POST", "/auth/refresh"),
     ("POST", "/auth/logout"),
     ("GET", "/auth/saml/metadata"),
+    # Admin-only user / API key management.
+    ("GET", "/auth/users"),
+    ("POST", "/auth/users"),
+    ("PUT", "/auth/users/{user_id}"),
+    ("GET", "/auth/users/{user_id}"),
+    ("GET", "/auth/users/{user_id}/logs"),
+    ("DELETE", "/auth/users/{user_id}"),
+    ("GET", "/auth/api-keys"),
+    ("POST", "/auth/api-keys"),
+    ("DELETE", "/auth/api-keys/{key_id}"),
+    ("GET", "/auth/api-keys/{key_id}/logs"),
+    # Admin-only SSO configuration and group management.
+    ("GET", "/sso/config"),
+    ("PUT", "/sso/config/{provider}"),
+    ("DELETE", "/sso/config/{provider}"),
+    ("GET", "/sso/group-mappings"),
+    ("POST", "/sso/group-mappings"),
+    ("PUT", "/sso/group-mappings/{mapping_id}"),
+    ("DELETE", "/sso/group-mappings/{mapping_id}"),
+    ("GET", "/groups"),
+    ("GET", "/projects/{project}/groups"),
+    ("POST", "/projects/{project}/groups"),
+    ("DELETE", "/projects/{project}/groups/{group_name}"),
+    ("GET", "/auth/users/{user_id}/groups"),
+    ("POST", "/auth/users/{user_id}/groups"),
+    ("DELETE", "/auth/users/{user_id}/groups/{group_name}"),
+    # Admin-only notification controls.
+    ("POST", "/notifications"),
+    ("POST", "/notifications/trigger"),
+    ("POST", "/notifications/test"),
+    ("PUT", "/notifications/{notification_id}/read"),
+    ("PUT", "/notifications/read-all"),
+    ("DELETE", "/notifications/{notification_id}"),
+    # Server-level update checks and non-API endpoints.
+    ("GET", "/framework-update-info.yml"),
+    ("GET", "/health"),
+    ("GET", "/version"),
 }
 
 
@@ -79,29 +121,191 @@ def _tool_name(method: str, path: str) -> str:
     return f"{method.lower()}_{clean}"
 
 
+def _display_title(summary: str, operation_id: str) -> str:
+    """Return a clean human-readable title for the tool.
+
+    Falls back to the operationId if no summary is provided.
+    """
+    return (summary or operation_id).strip()
+
+
+def _category_from_tags(tags: list[str] | None) -> str | None:
+    """Return a display category from OpenAPI operation tags.
+
+    The WAFpass spec tags each router consistently (e.g. ``runs``,
+    ``controls``). We expose the first tag in ``tool.meta.category`` so
+    clients can group related tools without overwriting the tool title.
+    """
+    if not tags:
+        return None
+    return tags[0].strip()
+
+
+def _operation_hints(method: str) -> ToolAnnotations:
+    """Return Claude-Desktop-friendly hints for grouping.
+
+    Read-only operations show under "Read-only tools"; mutating operations
+    show under "Write/delete tools".
+    """
+    read_only = method == "GET"
+    destructive = method in {"DELETE", "POST", "PUT", "PATCH"}
+    return ToolAnnotations(
+        title=None,
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=method in {"GET", "PUT", "DELETE"},
+        open_world_hint=False,
+    )
+
+
+def _canonical_path(path: str) -> str:
+    """Strip a leading ``/api/vN`` version prefix for role lookups.
+
+    The upstream server versioned all routers under ``/api/v1``, but the
+    internal role matrix is defined in terms of the unversioned path.
+    """
+    return _API_VERSION_PREFIX_RE.sub("", path)
+
+
+def _unwrap_nullable_union(
+    schema: dict[str, Any],
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return the concrete schema and whether ``null`` is allowed.
+
+    OpenAPI 3.1 expresses optional/nullable fields with ``anyOf``/``oneOf``
+    that include a ``{"type": "null"}`` branch. Pydantic needs the concrete
+    type, so we strip the null branch and mark the field optional.
+    """
+    union = schema.get("anyOf") or schema.get("oneOf")
+    if not isinstance(union, list):
+        return (None, False)
+
+    non_null = [s for s in union if isinstance(s, dict) and s.get("type") != "null"]
+    is_nullable = any(isinstance(s, dict) and s.get("type") == "null" for s in union)
+    if len(non_null) == 1:
+        return (non_null[0], is_nullable)
+    return (None, is_nullable)
+
+
 def _schema_to_field(
-    name: str, schema: dict[str, Any], required: bool
+    name: str,
+    schema: dict[str, Any],
+    required: bool,
+    spec: dict[str, Any] | None = None,
 ) -> tuple[type | None, FieldInfo]:
     """Convert an OpenAPI property schema to a Pydantic field tuple."""
+    if spec is not None:
+        resolved_schema = _resolve_schema(spec, schema)
+        assert isinstance(resolved_schema, dict)
+        schema = resolved_schema
+
+    nullable_union = _unwrap_nullable_union(schema)
+    concrete_schema = nullable_union[0]
+    if concrete_schema is not None:
+        allows_null = nullable_union[1]
+        required = required and not allows_null
+        # Preserve the full resolved union in the generated JSON schema so the
+        # tool description still shows nullability correctly.
+        extra: dict[str, Any] = {"anyOf": schema.get("anyOf", schema.get("oneOf"))}
+        concrete_type, _ = _schema_to_field(
+            name, concrete_schema, required=True, spec=None
+        )
+        py_type: type | None
+        if allows_null and concrete_type is not None:
+            # Pydantic accepts a None union for optional nullable fields.
+            py_type = concrete_type | None  # type: ignore[assignment]
+        else:
+            py_type = concrete_type
+        extra_kwargs: dict[str, Any] = {
+            "description": schema.get("description", ""),
+            "json_schema_extra": extra,
+        }
+        if required:
+            return (py_type, Field(**extra_kwargs))
+        return cast(
+            tuple[type | None, FieldInfo],
+            (py_type, Field(default=None, **extra_kwargs)),
+        )
+
     openapi_type = schema.get("type", "string")
-    py_type: type = _OPENAPI_TYPES_TO_PYTHON.get(openapi_type, str)
+    py_type = _OPENAPI_TYPES_TO_PYTHON.get(openapi_type, str)
+    json_schema_extra = None
 
     if openapi_type == "array":
         items = schema.get("items", {})
         item_type = _OPENAPI_TYPES_TO_PYTHON.get(items.get("type"), Any)
         py_type = list[item_type]  # type: ignore[valid-type]
+        # Preserve nested item schema so the generated tool input_schema shows
+        # real object fields for arrays like auto-fix findings.
+        if items:
+            json_schema_extra = {"items": items}
     elif openapi_type == "object":
         py_type = dict[str, Any]
+        # Preserve object properties in the generated JSON schema.
+        if "properties" in schema:
+            json_schema_extra = {
+                "properties": schema.get("properties", {}),
+                "required": schema.get("required", []),
+            }
 
     description = schema.get("description", "")
+    field_kwargs: dict[str, Any] = {"description": description}
+    if json_schema_extra is not None:
+        field_kwargs["json_schema_extra"] = json_schema_extra
 
     if required:
-        return (py_type, Field(description=description))
+        return (py_type, Field(**field_kwargs))
     optional_field = cast(
         tuple[type | None, FieldInfo],
-        (py_type, Field(default=None, description=description)),
+        (py_type, Field(default=None, **field_kwargs)),
     )
     return optional_field
+
+
+def _resolve_ref(spec: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Follow a single ``$ref`` pointer to its component definition."""
+    ref = schema.get("$ref")
+    if not ref or not isinstance(ref, str):
+        return schema
+    if not ref.startswith("#/components/schemas/"):
+        return schema
+    name = ref[len("#/components/schemas/") :]
+    components = spec.get("components", {})
+    target: dict[str, Any] | None = components.get("schemas", {}).get(name)
+    return target if target is not None else schema
+
+
+def _resolve_schema(
+    spec: dict[str, Any], schema: dict[str, Any] | list[Any]
+) -> dict[str, Any] | list[Any]:
+    """Recursively resolve ``$ref`` pointers in a schema.
+
+    Handles top-level references, nested object properties, and array item
+    references so generated Pydantic models expose the real field structure.
+    """
+    if isinstance(schema, list):
+        return [_resolve_schema(spec, s) for s in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    resolved = _resolve_ref(spec, schema)
+    if resolved is not schema:
+        # Avoid infinite recursion on circular refs by replacing the ref with
+        # a shallow marker before recursing. This is safe for WAFpass specs
+        # which do not contain circular schema definitions.
+        schema = {**resolved}
+
+    result: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "properties" and isinstance(value, dict):
+            result[key] = {k: _resolve_schema(spec, v) for k, v in value.items()}
+        elif key == "items" and isinstance(value, dict):
+            result[key] = _resolve_schema(spec, value)
+        elif key in ("anyOf", "allOf", "oneOf") and isinstance(value, list):
+            result[key] = [_resolve_schema(spec, item) for item in value]
+        else:
+            result[key] = value
+    return result
 
 
 def _build_request_model(
@@ -109,22 +313,30 @@ def _build_request_model(
     path_param_names: set[str],
     query_params: list[dict[str, Any]],
     request_body: dict[str, Any] | None,
+    spec: dict[str, Any] | None = None,
 ) -> type[BaseModel]:
     """Create a Pydantic model that validates arguments for one operation."""
     fields: dict[str, tuple[type | None, FieldInfo]] = {}
 
+    # Path parameters are always required so the URL can be built.
+    for name in path_param_names:
+        fields[name] = _schema_to_field(name, {"type": "string"}, required=True)
+
     for param in query_params:
         name = param["name"]
-        schema = param.get("schema", {})
+        schema = param.get("schema") or {}
         required = param.get("required", False)
         fields[name] = _schema_to_field(name, schema, required)
 
     if request_body:
         body_schema = (
-            request_body.get("content", {})
-            .get("application/json", {})
-            .get("schema", {})
+            request_body.get("content", {}).get("application/json", {}).get("schema")
+            or {}
         )
+        if spec is not None:
+            resolved = _resolve_schema(spec, body_schema)
+            assert isinstance(resolved, dict)
+            body_schema = resolved
         required_props = set(body_schema.get("required", []))
         for prop_name, prop_schema in body_schema.get("properties", {}).items():
             fields[prop_name] = _schema_to_field(
@@ -159,6 +371,8 @@ class OperationMeta:
             placeholder = "{" + key + "}"
             if placeholder in url:
                 url = url.replace(placeholder, str(value))
+        if "{" in url:
+            raise ValueError(f"Unsubstituted path parameter in URL: {url}")
         return url
 
     def extract_body(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
@@ -202,18 +416,21 @@ class OpenAPIMapper:
                 method = method.upper()
                 if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
                     continue
-                if (method, path) in SKIP_OPERATIONS:
+                canonical_path = _canonical_path(path)
+                if (method, canonical_path) in SKIP_OPERATIONS:
                     continue
                 if not isinstance(details, dict):
                     continue
 
                 operation_id = details.get("operationId") or _tool_name(method, path)
                 tool_name = operation_id
-                summary = (
-                    details.get("summary", "")
-                    or details.get("description", "")
-                    or tool_name
-                )
+                summary = details.get("summary", "") or tool_name
+                title = _display_title(summary, tool_name)
+                # Use the full docstring as the description when available so the AI
+                # understands limitations such as "only fixable assertions are patched".
+                description = (details.get("description", "") or summary).strip()
+                category = _category_from_tags(details.get("tags"))
+                required_role = ROLE_MAP.get((method, canonical_path))
                 parameters = details.get("parameters", []) or []
                 request_body = details.get("requestBody")
 
@@ -224,14 +441,35 @@ class OpenAPIMapper:
                 query_param_names = {p["name"] for p in query_params}
 
                 request_model = _build_request_model(
-                    tool_name, path_param_names, query_params, request_body
+                    tool_name,
+                    path_param_names,
+                    query_params,
+                    request_body,
+                    spec=self.spec,
                 )
-                required_role = ROLE_MAP.get((method, path))
+
+                meta: dict[str, Any] = {}
+                if category:
+                    meta["category"] = category
+                if required_role:
+                    meta["required_role"] = required_role
+
+                # Surface category and role inside the description as well because not
+                # all MCP clients render tool meta/annotations.
+                description_parts = [description]
+                if category:
+                    description_parts.append(f"Category: {category}.")
+                if required_role:
+                    description_parts.append(f"Minimum role required: {required_role}.")
+                description = "\n\n".join(description_parts)
 
                 tool = Tool(
                     name=tool_name,
-                    description=summary,
+                    title=title,
+                    description=description,
                     input_schema=request_model.model_json_schema(),
+                    annotations=_operation_hints(method),
+                    _meta=meta or None,
                 )
 
                 self.operations[tool_name] = OperationMeta(
