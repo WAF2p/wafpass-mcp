@@ -90,10 +90,11 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-This creates two console scripts in `.venv/bin`:
+This creates three console scripts in `.venv/bin`:
 
 - `wafpass-mcp` — runs the HTTP/SSE bridge.
 - `wafpass-mcp-stdio` — runs the stdio bridge for Claude Desktop.
+- `wafpass-mcp-configure` — interactive login that stores credentials in the user's config directory.
 
 ### 2. Start the upstream WAFpass server
 
@@ -109,12 +110,26 @@ WAFPASS_ADMIN_ROLE=admin
 
 The server creates this user automatically on first startup.
 
-### 3. Create a WAF++ access token and refresh token
+### 3. Log in and store credentials (recommended)
 
-Exchange the bootstrap credentials for a token pair:
+Run the interactive helper:
 
 ```bash
-RESP=$(curl -s -X POST http://localhost:8000/auth/login \
+wafpass-mcp-configure
+```
+
+It prompts for the WAFpass API URL, username, and password, logs in, and stores the access token, refresh token, and URL in the user's config directory. The file is created with restrictive permissions (`0o600`) where the OS supports it.
+
+After `wafpass-mcp-configure` succeeds, `wafpass-mcp-stdio` can start without any environment variables. It reads the stored config by default and refreshes the access token automatically before it expires.
+
+> Access tokens expire after `WAFPASS_JWT_EXPIRE_MINUTES` (default 60). Keeping the refresh token in the stored config lets the stdio bridge refresh the access token automatically.
+
+#### Alternative: manual token creation
+
+If you prefer not to store credentials, or you are configuring a headless/CI environment, create a token pair manually and pass it through environment variables:
+
+```bash
+RESP=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"changeme123"}')
 
@@ -127,19 +142,34 @@ echo "Refresh: $REFRESH_TOKEN"
 
 If you don't have `jq`, inspect the raw JSON response and copy the two token values manually.
 
-> Access tokens expire after `WAFPASS_JWT_EXPIRE_MINUTES` (default 60). The stdio bridge can refresh them automatically if you also supply the refresh token.
-
 ### 4. Configure Claude Desktop (stdio — recommended)
 
 The best way to use the bridge locally with Claude Desktop is to run it as a stdio command. This avoids HTTPS certificates, open ports, and TLS termination entirely.
 
-Copy the example config:
+Because credentials are now stored by `wafpass-mcp-configure`, the Claude Desktop config only needs the command path:
 
-```bash
-cp claude_desktop_config.example.json claude_desktop_config.json
+```json
+{
+  "mcpServers": {
+    "wafpass": {
+      "command": "/Users/lewandos/git/waf++/wafpass-mcp/.venv/bin/wafpass-mcp-stdio"
+    }
+  }
+}
 ```
 
-Edit `claude_desktop_config.json` and insert both tokens:
+Place the file in Claude Desktop's MCP config location and restart Claude Desktop:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+The exact path can be opened from Claude Desktop via **Settings → Developer → Edit Config**.
+
+After restarting, open a new chat and look for the WAFpass tools in the tool picker (or ask Claude to list them). You should see tools like `list_runs_runs_get`, `get_run_runs__run_id__get`, etc., filtered by the token's role.
+
+#### Overriding the stored config with environment variables
+
+Environment variables take precedence over the stored config. This is useful for testing, CI, or switching backends without re-running `wafpass-mcp-configure`:
 
 ```json
 {
@@ -157,15 +187,6 @@ Edit `claude_desktop_config.json` and insert both tokens:
   }
 }
 ```
-
-Place the file in Claude Desktop's MCP config location and restart Claude Desktop:
-
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-The exact path can be opened from Claude Desktop via **Settings → Developer → Edit Config**.
-
-After restarting, open a new chat and look for the WAFpass tools in the tool picker (or ask Claude to list them). You should see tools like `list_runs_runs_get`, `get_run_runs__run_id__get`, etc., filtered by the token's role.
 
 ### 5. Alternative: HTTPS setup with mkcert
 
@@ -225,7 +246,8 @@ The SSE endpoint is now `https://localhost:3001/sse`. The certificate files are 
 
 ### Notes for stdio mode
 
-- `WAFPASS_ACCESS_TOKEN` is required; `WAFPASS_REFRESH_TOKEN` is optional but strongly recommended so the bridge can refresh the access token before it expires.
+- In stdio mode, credentials are read from the stored config file by default. Environment variables override the stored values, so `WAFPASS_ACCESS_TOKEN` is only required when no config has been saved.
+- `WAFPASS_REFRESH_TOKEN` is optional but strongly recommended so the bridge can refresh the access token before it expires.
 - The bridge logs to **stderr**; stdout is reserved for the MCP protocol.
 - Token refresh only happens in stdio mode. HTTP/SSE clients must provide a fresh access token with every SSE connection.
 
@@ -338,17 +360,25 @@ Once you have an HTTPS endpoint, add it to an MCP host that supports HTTP/SSE (e
 
 ## Configuration
 
+Settings can come from two places. `wafpass-mcp-configure` writes them to the user's config directory; environment variables override the stored values.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WAFPASS_API_BASE_URL` | `http://localhost:8000` | Upstream WAFpass API |
 | `WAFPASS_TOKEN_MODE` | `introspection` | `introspection` (call `/auth/me`) or `jwt_secret` (local HS256) |
 | `WAFPASS_JWT_SECRET` | *(empty)* | Required for `jwt_secret` mode; must match backend secret |
-| `WAFPASS_ACCESS_TOKEN` | *(empty)* | WAF++ token supplied in stdio mode (e.g. Claude Desktop) |
-| `WAFPASS_REFRESH_TOKEN` | *(empty)* | Optional opaque refresh token for automatic access-token refresh in stdio mode |
+| `WAFPASS_ACCESS_TOKEN` | *(empty)* | WAF++ token for stdio mode; optional if stored by `wafpass-mcp-configure` |
+| `WAFPASS_REFRESH_TOKEN` | *(empty)* | Opaque refresh token for automatic access-token refresh in stdio mode |
 | `WAFPASS_REFRESH_THRESHOLD_SECONDS` | `300` | Refresh the access token if it expires within this many seconds |
 | `MCP_HOST` | `0.0.0.0` | Bridge bind host (HTTP/SSE mode) |
 | `MCP_PORT` | `3001` | Bridge bind port (HTTP/SSE mode) |
 | `LOG_LEVEL` | `INFO` | Logging level |
+
+The stored config file location depends on the OS:
+
+- **macOS**: `~/Library/Application Support/wafpass-mcp/settings.json`
+- **Linux**: `~/.config/wafpass-mcp/settings.json`
+- **Windows**: `%APPDATA%\wafpass-mcp\settings.json`
 
 ## Token validation modes
 
@@ -439,6 +469,7 @@ python scripts/mcp_client_test.py <WAF++_TOKEN>
 ## Contributing and security
 
 - `CONTRIBUTING.md` — how to set up local development, run tests, and open pull requests.
+- `docs/mcp-desktop-setup.md` — step-by-step Claude Desktop installation and login guide.
 - `TECH.md` — architecture, request lifecycle, OpenAPI mapping, and token validation details.
 - `SECURITY.md` — supported versions, vulnerability reporting, and security-sensitive configuration.
 - `CODE_OF_CONDUCT.md` — community standards and enforcement.

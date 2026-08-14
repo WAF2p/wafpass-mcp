@@ -42,6 +42,7 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "pyjwt>=2.9.0",
     "structlog>=24.4.0",
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +65,7 @@ Community = "https://github.com/WAF2p"
 [project.scripts]
 wafpass-mcp = "wafpass_mcp.main:main"
 wafpass-mcp-stdio = "wafpass_mcp.stdio_server:_entrypoint"
+wafpass-mcp-configure = "wafpass_mcp.configure:_entrypoint"
 
 [tool.hatch.build.targets.wheel]
 packages = ["wafpass_mcp"]

@@ -1,8 +1,10 @@
 """stdio MCP server entry point for local clients such as Claude Desktop.
 
 This runs the same dynamic MCP server as the HTTP/SSE bridge, but communicates
-over stdin/stdout. The WAF++ access token is supplied via the
-``WAFPASS_ACCESS_TOKEN`` environment variable and validated once at startup.
+over stdin/stdout. By default, credentials are read from the user config file
+written by ``wafpass-mcp-configure``. Environment variables override the
+stored config, so power users and CI can still supply ``WAFPASS_ACCESS_TOKEN``
+directly.
 
 Because stdout is reserved for the MCP protocol, all logging is directed to
 stderr.
@@ -22,6 +24,7 @@ from mcp.server.stdio import stdio_server
 from wafpass_mcp.auth import UserContext, refresh_access_token, validate_token
 from wafpass_mcp.config import settings
 from wafpass_mcp.mcp_server import MCPServerBridge
+from wafpass_mcp.settings_store import load_user_config
 from wafpass_mcp.token_manager import TokenManager
 
 logger = structlog.get_logger()
@@ -50,17 +53,35 @@ def _configure_logging() -> None:
     )
 
 
+def _resolve_stdio_credentials() -> tuple[str, str]:
+    """Return the access/refresh token pair from env or the user's config file."""
+    token = os.environ.get("WAFPASS_ACCESS_TOKEN", "")
+    refresh_token = os.environ.get("WAFPASS_REFRESH_TOKEN", "")
+    if token:
+        return token, refresh_token
+
+    user_config = load_user_config()
+    if user_config is not None:
+        user_config.apply_to_env()
+        settings.wafpass_api_base_url = user_config.api_base_url
+        settings.wafpass_token_mode = user_config.token_mode
+        settings.log_level = user_config.log_level
+        token = os.environ.get("WAFPASS_ACCESS_TOKEN", "")
+        refresh_token = os.environ.get("WAFPASS_REFRESH_TOKEN", "")
+    return token, refresh_token
+
+
 async def main() -> None:
+    token, refresh_token = _resolve_stdio_credentials()
+
     _configure_logging()
 
-    token = os.environ.get("WAFPASS_ACCESS_TOKEN")
     if not token:
         logger.error("missing_access_token")
         raise SystemExit(
-            "WAFPASS_ACCESS_TOKEN environment variable is required for stdio mode."
+            "No WAF++ access token found. Either set WAFPASS_ACCESS_TOKEN, "
+            "or run `wafpass-mcp-configure` to log in and store credentials."
         )
-
-    refresh_token = os.environ.get("WAFPASS_REFRESH_TOKEN")
 
     logger.info("validating_token")
     try:
