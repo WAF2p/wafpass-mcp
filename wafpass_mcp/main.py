@@ -19,14 +19,18 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from wafpass_mcp.auth import require_user_context
 from wafpass_mcp.config import settings
 from wafpass_mcp.mcp_server import MCPServerBridge as _MCPServerBridge
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 logger = structlog.get_logger()
 _bridge: _MCPServerBridge | None = None
@@ -68,11 +72,41 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="wafpass-mcp", lifespan=_lifespan)
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    return FileResponse(_STATIC_DIR / "logo.png")
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "bridge": "ready" if _bridge else "initializing"}
+async def health(request: Request) -> Response:
+    bridge_state = "ready" if _bridge else "initializing"
+    if "text/html" in request.headers.get("accept", ""):
+        styles = "font-family: system-ui, sans-serif; "
+        styles += "max-width: 600px; margin: 40px auto; text-align: center;"
+        return HTMLResponse(
+            f"""
+            <!doctype html>
+            <html lang="en">
+              <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <title>WAF++ MCP Bridge</title>
+                <link rel="icon" type="image/png" href="/favicon.ico">
+              </head>
+              <body style="{styles}">
+                <img src="/static/logo.png" width="120"
+                     alt="WAF++ logo" style="margin-bottom: 20px;">
+                <h1>WAF++ MCP Bridge</h1>
+                <p>Status: <strong>{bridge_state}</strong></p>
+                <p>SSE endpoint: <code>http://localhost:3001/sse</code></p>
+              </body>
+            </html>
+            """
+        )
+    return JSONResponse({"status": "ok", "bridge": bridge_state})
 
 
 @app.get("/sse")
@@ -86,6 +120,7 @@ async def sse_endpoint(request: Request) -> Response:
     logger.info("sse_connect", user=ctx.username, role=ctx.role)
 
     bridge = _get_bridge()
+    assert bridge.sse is not None
     async with bridge.sse.connect_sse(
         request.scope, request.receive, request._send
     ) as (read_stream, write_stream):
@@ -110,6 +145,7 @@ async def messages_endpoint(request: Request) -> Response:
     request.scope["wafpass_user_context"] = ctx
 
     bridge = _get_bridge()
+    assert bridge.sse is not None
     await bridge.sse.handle_post_message(
         request.scope, request.receive, request._send
     )

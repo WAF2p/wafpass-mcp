@@ -1,5 +1,7 @@
 # WAF++ MCP Bridge
 
+<img src="https://waf2p.dev/images/WAFpp_upscaled_1000.png" width="120" alt="WAF++ logo" align="right">
+
 A secure [Model Context Protocol](https://modelcontextprotocol.io) server that exposes WAFpass (WAF++ backend) REST endpoints as MCP tools for AI assistants.
 
 ## Architecture
@@ -74,6 +76,266 @@ The service builds from `./wafpass-mcp`, depends on `wafpass-server`, and expose
 
 > **Release artifact:** `wafpass-mcp` is released as a Python package on PyPI. The `Dockerfile` exists only for local convenience in `docker-compose.yml`; the release workflow does not publish a Docker image.
 
+## First-time setup
+
+This guide covers installing the bridge, creating a WAF++ token, and connecting it to Claude Desktop. For most local use the recommended transport is **stdio**; an HTTPS-based HTTP/SSE alternative is documented below.
+
+### 1. Install the bridge
+
+```bash
+git clone https://github.com/WAF2p/wafpass-mcp.git
+cd wafpass-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+This creates two console scripts in `.venv/bin`:
+
+- `wafpass-mcp` — runs the HTTP/SSE bridge.
+- `wafpass-mcp-stdio` — runs the stdio bridge for Claude Desktop.
+
+### 2. Start the upstream WAFpass server
+
+The bridge needs a running `wafpass-server` on `http://localhost:8000`. Follow the setup in `../wafpass-server/README.md`.
+
+For local development, seed a bootstrap admin in `../wafpass-server/.env`:
+
+```bash
+WAFPASS_ADMIN_USERNAME=admin
+WAFPASS_ADMIN_PASSWORD=changeme123
+WAFPASS_ADMIN_ROLE=admin
+```
+
+The server creates this user automatically on first startup.
+
+### 3. Create a WAF++ access token and refresh token
+
+Exchange the bootstrap credentials for a token pair:
+
+```bash
+RESP=$(curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"changeme123"}')
+
+export ACCESS_TOKEN=$(echo "$RESP" | jq -r .access_token)
+export REFRESH_TOKEN=$(echo "$RESP" | jq -r .refresh_token)
+
+echo "Access:  $ACCESS_TOKEN"
+echo "Refresh: $REFRESH_TOKEN"
+```
+
+If you don't have `jq`, inspect the raw JSON response and copy the two token values manually.
+
+> Access tokens expire after `WAFPASS_JWT_EXPIRE_MINUTES` (default 60). The stdio bridge can refresh them automatically if you also supply the refresh token.
+
+### 4. Configure Claude Desktop (stdio — recommended)
+
+The best way to use the bridge locally with Claude Desktop is to run it as a stdio command. This avoids HTTPS certificates, open ports, and TLS termination entirely.
+
+Copy the example config:
+
+```bash
+cp claude_desktop_config.example.json claude_desktop_config.json
+```
+
+Edit `claude_desktop_config.json` and insert both tokens:
+
+```json
+{
+  "mcpServers": {
+    "wafpass": {
+      "command": "/Users/lewandos/git/waf++/wafpass-mcp/.venv/bin/wafpass-mcp-stdio",
+      "env": {
+        "WAFPASS_ACCESS_TOKEN": "<WAF++_TOKEN_HERE>",
+        "WAFPASS_REFRESH_TOKEN": "<WAF++_REFRESH_TOKEN_HERE>",
+        "WAFPASS_API_BASE_URL": "http://localhost:8000",
+        "WAFPASS_TOKEN_MODE": "introspection",
+        "WAFPASS_REFRESH_THRESHOLD_SECONDS": "300"
+      }
+    }
+  }
+}
+```
+
+Place the file in Claude Desktop's MCP config location and restart Claude Desktop:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+The exact path can be opened from Claude Desktop via **Settings → Developer → Edit Config**.
+
+After restarting, open a new chat and look for the WAFpass tools in the tool picker (or ask Claude to list them). You should see tools like `list_runs_runs_get`, `get_run_runs__run_id__get`, etc., filtered by the token's role.
+
+### 5. Alternative: HTTPS setup with mkcert
+
+If your MCP client requires HTTP/SSE over `https://` instead of stdio, you can run the bridge behind a trusted local certificate generated with [mkcert](https://github.com/FiloSottile/mkcert).
+
+#### Install and trust the local CA
+
+**macOS:**
+
+```bash
+brew install mkcert
+mkcert -install
+```
+
+The `-install` step adds the local CA to the macOS system and login keychains; most browsers and HTTP clients trust it immediately.
+
+**Windows:**
+
+```powershell
+# Use Chocolatey or download the binary from GitHub
+choco install mkcert
+mkcert -install
+```
+
+You may need to restart browsers or add the generated CA certificate to the Windows certificate store manually. See the mkcert README for the latest Windows instructions.
+
+**Linux:**
+
+```bash
+# Install from your distribution or download the binary
+curl -JLO https://github.com/FiloSottile/mkcert/releases/download/v1.4.4/mkcert-v1.4.4-linux-amd64
+chmod +x mkcert-v1.4.4-linux-amd64
+sudo mv mkcert-v1.4.4-linux-amd64 /usr/local/bin/mkcert
+mkcert -install
+```
+
+On Linux the CA is installed under `$HOME/.local/share/mkcert`; some browsers need it imported manually.
+
+#### Generate a certificate for localhost
+
+```bash
+mkcert localhost 127.0.0.1 ::1
+# Produces: localhost.pem (cert) and localhost-key.pem (key)
+```
+
+#### Run the bridge with TLS
+
+```bash
+uvicorn wafpass_mcp.main:app \
+  --host 0.0.0.0 \
+  --port 3001 \
+  --ssl-keyfile ./localhost-key.pem \
+  --ssl-certfile ./localhost.pem
+```
+
+The SSE endpoint is now `https://localhost:3001/sse`. The certificate files are already ignored by `.gitignore` so they will not be committed.
+
+### Notes for stdio mode
+
+- `WAFPASS_ACCESS_TOKEN` is required; `WAFPASS_REFRESH_TOKEN` is optional but strongly recommended so the bridge can refresh the access token before it expires.
+- The bridge logs to **stderr**; stdout is reserved for the MCP protocol.
+- Token refresh only happens in stdio mode. HTTP/SSE clients must provide a fresh access token with every SSE connection.
+
+## Alternative: HTTPS setup for HTTP/SSE clients
+
+If you prefer to keep using the HTTP/SSE transport (for remote AI hosts, browser-based clients, or because your MCP client does not support stdio), you need a TLS termination layer in front of the bridge because most HTTPS-only MCP clients refuse plain `http://` URLs. Below are three working approaches for local development and testing.
+
+### Option A: ngrok (quickest public HTTPS URL)
+
+[ngrok](https://ngrok.com) gives you an HTTPS tunnel to `localhost:3001` without touching certificates.
+
+1. Install ngrok and authenticate (`ngrok authtoken <token>`).
+2. Start the bridge normally:
+   ```bash
+   python -m wafpass_mcp.main
+   ```
+3. In another terminal expose it:
+   ```bash
+   ngrok http 3001
+   ```
+4. Copy the generated `https://` URL (e.g. `https://xxxx.ngrok-free.app`).
+5. Configure your MCP client to use that URL for the SSE endpoint, and keep sending `Authorization: Bearer <WAF++ token>`:
+   ```
+   https://xxxx.ngrok-free.app/sse
+   ```
+
+> The free ngrok tier gives a random URL on every restart. For a stable address use a paid/ngrok-static domain or switch to Cloudflare Tunnel.
+
+### Option B: mkcert + uvicorn with TLS (local trusted certificate)
+
+[mkcert](https://github.com/FiloSottile/mkcert) creates a certificate that your OS and browsers trust locally. This is the cleanest setup for repeated local testing with Claude Desktop.
+
+1. Install mkcert and create a local CA:
+   ```bash
+   mkcert -install
+   ```
+2. Generate a certificate for `localhost` (and any local DNS you use):
+   ```bash
+   mkcert localhost 127.0.0.1 ::1
+   # Produces: localhost.pem (cert) and localhost-key.pem (key)
+   ```
+3. Start uvicorn directly with the certificate files:
+   ```bash
+   uvicorn wafpass_mcp.main:app \
+     --host 0.0.0.0 \
+     --port 3001 \
+     --ssl-keyfile ./localhost-key.pem \
+     --ssl-certfile ./localhost.pem
+   ```
+4. The SSE endpoint is now available at:
+   ```
+   https://localhost:3001/sse
+   ```
+5. Keep the key and certificate files out of git (they are already ignored by the default `.gitignore` patterns for `*.pem`).
+
+> The built-in `python -m wafpass_mcp.main` entry point does not expose uvicorn's TLS flags. Use `uvicorn` directly, or set `MCP_PORT` / other settings via environment variables as usual.
+
+### Option C: Caddy reverse proxy (automatic local HTTPS)
+
+[Caddy](https://caddyserver.com) can obtain and serve a local HTTPS certificate automatically.
+
+1. Create a `Caddyfile` in the repo root:
+   ```
+   localhost:3443 {
+       reverse_proxy localhost:3001
+   }
+   ```
+2. Start the bridge on its default port:
+   ```bash
+   python -m wafpass_mcp.main
+   ```
+3. Run Caddy in another terminal:
+   ```bash
+   caddy run
+   ```
+4. Connect your MCP client to:
+   ```
+   https://localhost:3443/sse
+   ```
+
+Caddy will handle TLS for the client and proxy plain HTTP to the bridge.
+
+### Updating the test scripts for HTTPS
+
+The example scripts in `scripts/` use `http://localhost:3001`. When testing an HTTPS endpoint, change the URLs in those scripts (or pass them as arguments) to the HTTPS address, e.g.:
+
+```python
+SSE_URL = "https://localhost:3001/sse"
+post_url = f"https://localhost:3001{endpoint}"
+```
+
+### HTTPS/SSE client configuration example
+
+Once you have an HTTPS endpoint, add it to an MCP host that supports HTTP/SSE (e.g. a remote Claude Code instance or another MCP client):
+
+```json
+{
+  "mcpServers": {
+    "wafpass": {
+      "url": "https://localhost:3001/sse",
+      "headers": {
+        "Authorization": "Bearer <WAF++_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+> Replace `<WAF++_TOKEN>` with a real token obtained from your WAFpass backend. Automatic refresh is only available in stdio mode; HTTP/SSE clients must provide a fresh token with every SSE connection.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -81,8 +343,11 @@ The service builds from `./wafpass-mcp`, depends on `wafpass-server`, and expose
 | `WAFPASS_API_BASE_URL` | `http://localhost:8000` | Upstream WAFpass API |
 | `WAFPASS_TOKEN_MODE` | `introspection` | `introspection` (call `/auth/me`) or `jwt_secret` (local HS256) |
 | `WAFPASS_JWT_SECRET` | *(empty)* | Required for `jwt_secret` mode; must match backend secret |
-| `MCP_HOST` | `0.0.0.0` | Bridge bind host |
-| `MCP_PORT` | `3001` | Bridge bind port |
+| `WAFPASS_ACCESS_TOKEN` | *(empty)* | WAF++ token supplied in stdio mode (e.g. Claude Desktop) |
+| `WAFPASS_REFRESH_TOKEN` | *(empty)* | Optional opaque refresh token for automatic access-token refresh in stdio mode |
+| `WAFPASS_REFRESH_THRESHOLD_SECONDS` | `300` | Refresh the access token if it expires within this many seconds |
+| `MCP_HOST` | `0.0.0.0` | Bridge bind host (HTTP/SSE mode) |
+| `MCP_PORT` | `3001` | Bridge bind port (HTTP/SSE mode) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## Token validation modes

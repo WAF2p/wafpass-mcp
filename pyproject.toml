@@ -63,9 +63,11 @@ Community = "https://github.com/WAF2p"
 
 [project.scripts]
 wafpass-mcp = "wafpass_mcp.main:main"
+wafpass-mcp-stdio = "wafpass_mcp.stdio_server:_entrypoint"
 
 [tool.hatch.build.targets.wheel]
 packages = ["wafpass_mcp"]
+include = ["wafpass_mcp/static/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]

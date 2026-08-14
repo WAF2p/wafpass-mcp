@@ -25,22 +25,42 @@ from mcp.types import (
 from wafpass_mcp.auth import UserContext
 from wafpass_mcp.config import settings
 from wafpass_mcp.openapi_mapper import OpenAPIMapper, OperationMeta
+from wafpass_mcp.token_manager import TokenManager
 
 logger = structlog.get_logger()
 
 
 class MCPServerBridge:
-    """Wraps an MCP Server and dynamically exposes WAFpass endpoints as tools."""
+    """Wraps an MCP Server and dynamically exposes WAFpass endpoints as tools.
 
-    def __init__(self) -> None:
-        self.sse = SseServerTransport("/messages/")
+    Supports both HTTP/SSE (the default, used by the FastAPI app) and stdio
+    (used when the bridge is run as a local command, e.g. from Claude Desktop).
+    In stdio mode the caller supplies a ``UserContext`` directly instead of
+    extracting it from the ASGI request scope.
+    """
+
+    def __init__(
+        self, *, sse: bool = True, token_manager: TokenManager | None = None
+    ) -> None:
+        self.sse = SseServerTransport("/messages/") if sse else None
         self.mapper: OpenAPIMapper | None = None
         self._operations: dict[str, OperationMeta] = {}
+        self._stdio_user_context: UserContext | None = None
+        self._token_manager = token_manager
         self.server = MCPServer(
             "wafpass-mcp",
             on_list_tools=self._on_list_tools,
             on_call_tool=self._on_call_tool,
         )
+
+    @property
+    def operations(self) -> dict[str, OperationMeta]:
+        """Exposed operations loaded from the upstream OpenAPI spec."""
+        return self._operations
+
+    def set_user_context(self, ctx: UserContext) -> None:
+        """Set the user context for stdio-based sessions."""
+        self._stdio_user_context = ctx
 
     async def load_openapi(self) -> None:
         """Fetch WAFpass OpenAPI and build MCP tool definitions + validators."""
@@ -120,11 +140,15 @@ class MCPServerBridge:
         )
 
     def _current_user(self, ctx: Any) -> UserContext | None:
-        """Extract the validated user context from the request scope.
+        """Extract the validated user context.
 
-        The FastAPI endpoints store the context under ``wafpass_user_context``
-        in the ASGI scope before handing the streams to the MCP runner.
+        For stdio sessions the context is set directly on the bridge. For HTTP/SSE
+        sessions the FastAPI endpoints store it under ``wafpass_user_context`` in
+        the ASGI scope before handing the streams to the MCP runner.
         """
+        if self._stdio_user_context is not None:
+            return self._stdio_user_context
+
         request = getattr(ctx, "request", None)
         if request is None:
             return None
@@ -144,6 +168,12 @@ class MCPServerBridge:
         body = op.extract_body(arguments)
         query = op.extract_query(arguments)
 
+        access_token = (
+            await self._token_manager.get_access_token()
+            if self._token_manager
+            else ctx.access_token
+        )
+
         async with httpx.AsyncClient(
             base_url=settings.wafpass_api_base_url, timeout=60
         ) as client:
@@ -151,7 +181,7 @@ class MCPServerBridge:
                 method=op.method,
                 url=url,
                 headers={
-                    "Authorization": f"Bearer {ctx.access_token}",
+                    "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 },
                 json=body if body is not None else None,
